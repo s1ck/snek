@@ -1,7 +1,9 @@
+use std::{ops::{Deref, DerefMut}, time::Duration};
+
 use bevy::prelude::*;
 use bevy::render::pass::ClearColor;
 use rand::prelude::random;
-use std::{ops::{Deref, DerefMut}, time::Duration};
+use std::rc::Rc;
 
 const ARENA_WIDTH: u32 = 10;
 const ARENA_HEIGHT: u32 = 10;
@@ -10,6 +12,11 @@ struct SnekHead {
     direction: Direction,
     next_direction: Option<Direction>,
 }
+
+struct SnekSegment;
+
+#[derive(Default)]
+struct SnekSegments(Vec<Entity>);
 
 struct SnekMoveTimer(Timer);
 impl Deref for SnekMoveTimer {
@@ -36,6 +43,7 @@ impl Default for FoodSpawnTimer {
 
 struct Materials {
     head_material: Handle<ColorMaterial>,
+    segment_material: Handle<ColorMaterial>,
     food_material: Handle<ColorMaterial>,
 }
 
@@ -84,11 +92,19 @@ fn setup(mut commands: Commands, mut materials: ResMut<Assets<ColorMaterial>>) {
     commands.spawn(Camera2dComponents::default());
     commands.insert_resource(Materials {
         head_material: materials.add(Color::rgb(0.4, 0.2, 0.0).into()),
+        segment_material: materials.add(Color::rgb(0.0, 0.2, 0.4).into()),
         food_material: materials.add(Color::rgb(1.0, 0.0, 0.0).into()),
     });
 }
 
-fn game_setup(mut commands: Commands, materials: Res<Materials>) {
+fn game_setup(mut commands: Commands, materials: Res<Materials>, mut segments: ResMut<SnekSegments>) {
+    let first_segment = spawn_segment(
+        &mut commands,
+        &materials.segment_material,
+        Position { x: 3, y: 2 },
+    );
+    segments.0 = vec![first_segment];
+
     commands
         .spawn(SpriteComponents {
             material: materials.head_material.clone(),
@@ -131,6 +147,7 @@ fn snek_movement(
     keyboard_input: Res<Input<KeyCode>>,
     snek_timer: ResMut<SnekMoveTimer>,
     mut heads: Query<(&mut SnekHead, &mut Position)>,
+    mut segment: Query<(&mut SnekSegment, &mut Position)>,
 ) {
     let dir: Option<Direction> = keyboard_input
         .get_pressed()
@@ -152,7 +169,8 @@ fn snek_movement(
                 head.next_direction = None
             }
         }
-        
+
+        let mut last_pos = *pos;
         if snek_timer.finished {
             let dir = head.next_direction.take().unwrap_or(head.direction);
             head.direction = dir;
@@ -162,7 +180,13 @@ fn snek_movement(
                 Direction::Up => pos.y += 1,
                 Direction::Down => pos.y -= 1,
             }
+            for (mut _segment, mut pos) in segment.iter_mut() {
+                let tmp = *pos;
+                *pos = last_pos;
+                last_pos = tmp;
+            }
         }
+
     }
 }
 
@@ -191,6 +215,23 @@ fn food_spawner(
 fn snek_timer(time: Res<Time>, mut snek_timer: ResMut<SnekMoveTimer>) {
     snek_timer.0.tick(time.delta_seconds);
 }
+
+fn spawn_segment(
+    commands: &mut Commands,
+    material: &Handle<ColorMaterial>,
+    position: Position,
+) -> Entity {
+    commands
+        .spawn(SpriteComponents {
+            material: material.clone(),
+            .. SpriteComponents::default()
+        })
+        .with(SnekSegment)
+        .with(position)
+        .with(Size::square(0.65));
+    commands.current_entity().unwrap()
+}
+
 fn main() {
 
     App::build()
@@ -205,6 +246,7 @@ fn main() {
             Duration::from_millis(500. as u64),
             true,
         )))
+        .add_resource(SnekSegments::default())
         .add_startup_system(setup.system())
         .add_startup_stage("game_setup")
         .add_startup_system_to_stage("game_setup", game_setup.system())
