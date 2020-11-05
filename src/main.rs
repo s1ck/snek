@@ -1,4 +1,7 @@
-use std::{ops::{Deref, DerefMut}, time::Duration};
+use std::{
+    ops::{Deref, DerefMut},
+    time::Duration,
+};
 
 use bevy::prelude::*;
 use bevy::render::pass::ClearColor;
@@ -47,6 +50,8 @@ struct Materials {
 }
 
 struct GrowthEvent;
+
+struct GameOverEvent;
 
 #[derive(Default)]
 struct LastTailPosition(Option<Position>);
@@ -101,26 +106,12 @@ fn setup(mut commands: Commands, mut materials: ResMut<Assets<ColorMaterial>>) {
     });
 }
 
-fn game_setup(mut commands: Commands, materials: Res<Materials>, mut segments: ResMut<SnekSegments>) {
-    let first_segment = spawn_segment(
-        &mut commands,
-        &materials.segment_material,
-        Position { x: 3, y: 2 },
-    );
-    segments.0 = vec![first_segment];
-
-    commands
-        .spawn(SpriteComponents {
-            material: materials.head_material.clone(),
-            sprite: Sprite::new(Vec2::new(10.0, 10.0)),
-            ..Default::default()
-        })
-        .with(SnekHead {
-            direction: Direction::Up,
-            next_direction: None,
-        })
-        .with(Position { x: 3, y: 3 })
-        .with(Size::square(0.8));
+fn game_setup(
+    commands: Commands,
+    materials: Res<Materials>,
+    segments: ResMut<SnekSegments>,
+) {
+    spawn_initial_snake(commands, &materials, segments);
 }
 
 fn size_scaling(windows: Res<Windows>, mut q: Query<(&Size, &mut Sprite)>) {
@@ -150,6 +141,7 @@ fn position_translation(windows: Res<Windows>, mut q: Query<(&Position, &mut Tra
 fn snek_movement(
     keyboard_input: Res<Input<KeyCode>>,
     snek_timer: ResMut<SnekMoveTimer>,
+    mut game_over_events: ResMut<Events<GameOverEvent>>,
     mut last_tail_position: ResMut<LastTailPosition>,
     mut heads: Query<(&mut SnekHead, &mut Position)>,
     mut segment: Query<(&mut SnekSegment, &mut Position)>,
@@ -166,6 +158,11 @@ fn snek_movement(
         .next();
 
     for (mut head, mut pos) in heads.iter_mut() {
+        // Game Over
+        if pos.x < 0 || pos.y < 0 || pos.x as u32 >= ARENA_WIDTH || pos.y as u32 >= ARENA_WIDTH {
+            game_over_events.send(GameOverEvent);
+        }
+
         let current_direction = head.direction;
         if let Some(dir) = dir {
             if dir != current_direction && dir != current_direction.opposite() {
@@ -174,7 +171,7 @@ fn snek_movement(
                 head.next_direction = None
             }
         }
-
+    
         let mut last_pos = *pos;
         if snek_timer.finished {
             let dir = head.next_direction.take().unwrap_or(head.direction);
@@ -185,15 +182,68 @@ fn snek_movement(
                 Direction::Up => pos.y += 1,
                 Direction::Down => pos.y -= 1,
             }
-            for (mut _segment, mut pos) in segment.iter_mut() {
-                let tmp = *pos;
-                *pos = last_pos;
+            for (mut _segment, mut segment_pos) in segment.iter_mut() {
+                if *segment_pos == *pos {
+                    game_over_events.send(GameOverEvent)
+                } else {
+                let tmp = *segment_pos;
+                *segment_pos = last_pos;
                 last_pos = tmp;
+                }
             }
             last_tail_position.0 = Some(last_pos);
         }
-
     }
+}
+
+fn game_over(
+    mut commands: Commands,
+    mut reader: Local<EventReader<GameOverEvent>>,
+    game_over_events: Res<Events<GameOverEvent>>,
+    materials: Res<Materials>,
+    segment_res: ResMut<SnekSegments>,
+    segments: Query<(Entity, &SnekSegment)>,
+    food: Query<(Entity, &Food)>,
+    heads: Query<(Entity, &SnekHead)>,
+) {
+    if reader.iter(&game_over_events).next().is_some() {
+        for (ent, _) in segments.iter() {
+            commands.despawn(ent);
+        }
+        for (ent, _) in food.iter() {
+            commands.despawn(ent);
+        }
+        for (ent, _) in heads.iter() {
+            commands.despawn(ent);
+        }
+        spawn_initial_snake(commands, &materials, segment_res);
+    }
+}
+
+fn spawn_initial_snake(
+    mut commands: Commands,
+    materials: &Res<Materials>,
+    mut segments: ResMut<SnekSegments>,
+) {
+    let first_segment = spawn_segment(
+        &mut commands,
+        &materials.segment_material,
+        Position { x: 3, y: 2 },
+    );
+    segments.0 = vec![first_segment];
+
+    commands
+        .spawn(SpriteComponents {
+            material: materials.head_material.clone(),
+            sprite: Sprite::new(Vec2::new(10.0, 10.0)),
+            ..Default::default()
+        })
+        .with(SnekHead {
+            direction: Direction::Up,
+            next_direction: None,
+        })
+        .with(Position { x: 3, y: 3 })
+        .with(Size::square(0.8));
 }
 
 fn food_spawner(
@@ -230,7 +280,7 @@ fn spawn_segment(
     commands
         .spawn(SpriteComponents {
             material: material.clone(),
-            .. SpriteComponents::default()
+            ..SpriteComponents::default()
         })
         .with(SnekSegment)
         .with(position)
@@ -276,7 +326,6 @@ fn snek_growth(
 }
 
 fn main() {
-
     App::build()
         .add_resource(WindowDescriptor {
             title: "Snek!".to_string(),
@@ -286,7 +335,7 @@ fn main() {
         })
         .add_resource(ClearColor(Color::rgb(0.04, 0.04, 0.04)))
         .add_resource(SnekMoveTimer(Timer::new(
-            Duration::from_millis(500. as u64),
+            Duration::from_millis(250. as u64),
             true,
         )))
         .add_resource(SnekSegments::default())
@@ -301,7 +350,9 @@ fn main() {
         .add_system(snek_timer.system())
         .add_system(snek_eating.system())
         .add_system(snek_growth.system())
+        .add_system(game_over.system())
         .add_event::<GrowthEvent>()
+        .add_event::<GameOverEvent>()
         .add_plugins(DefaultPlugins)
         .run();
 }
