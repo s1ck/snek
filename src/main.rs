@@ -3,7 +3,6 @@ use std::{ops::{Deref, DerefMut}, time::Duration};
 use bevy::prelude::*;
 use bevy::render::pass::ClearColor;
 use rand::prelude::random;
-use std::rc::Rc;
 
 const ARENA_WIDTH: u32 = 10;
 const ARENA_HEIGHT: u32 = 10;
@@ -46,6 +45,11 @@ struct Materials {
     segment_material: Handle<ColorMaterial>,
     food_material: Handle<ColorMaterial>,
 }
+
+struct GrowthEvent;
+
+#[derive(Default)]
+struct LastTailPosition(Option<Position>);
 
 #[derive(Default, Copy, Clone, Eq, PartialEq, Hash)]
 struct Position {
@@ -146,6 +150,7 @@ fn position_translation(windows: Res<Windows>, mut q: Query<(&Position, &mut Tra
 fn snek_movement(
     keyboard_input: Res<Input<KeyCode>>,
     snek_timer: ResMut<SnekMoveTimer>,
+    mut last_tail_position: ResMut<LastTailPosition>,
     mut heads: Query<(&mut SnekHead, &mut Position)>,
     mut segment: Query<(&mut SnekSegment, &mut Position)>,
 ) {
@@ -185,6 +190,7 @@ fn snek_movement(
                 *pos = last_pos;
                 last_pos = tmp;
             }
+            last_tail_position.0 = Some(last_pos);
         }
 
     }
@@ -232,6 +238,43 @@ fn spawn_segment(
     commands.current_entity().unwrap()
 }
 
+fn snek_eating(
+    mut commands: Commands,
+    snek_timer: ResMut<SnekMoveTimer>,
+    mut growth_events: ResMut<Events<GrowthEvent>>,
+    food_positions: Query<With<Food, (Entity, &Position)>>,
+    head_positions: Query<With<SnekHead, &Position>>,
+) {
+    if !snek_timer.finished {
+        return;
+    }
+    for head_pos in head_positions.iter() {
+        for (entity, food_pos) in food_positions.iter() {
+            if food_pos == head_pos {
+                commands.despawn(entity);
+                growth_events.send(GrowthEvent);
+            }
+        }
+    }
+}
+
+fn snek_growth(
+    mut commands: Commands,
+    last_tail_position: Res<LastTailPosition>,
+    growth_events: Res<Events<GrowthEvent>>,
+    mut segments: ResMut<SnekSegments>,
+    mut growth_reader: Local<EventReader<GrowthEvent>>,
+    materials: Res<Materials>,
+) {
+    if growth_reader.iter(&growth_events).next().is_some() {
+        segments.0.push(spawn_segment(
+            &mut commands,
+            &materials.segment_material,
+            last_tail_position.0.unwrap(),
+        ))
+    }
+}
+
 fn main() {
 
     App::build()
@@ -247,6 +290,7 @@ fn main() {
             true,
         )))
         .add_resource(SnekSegments::default())
+        .add_resource(LastTailPosition::default())
         .add_startup_system(setup.system())
         .add_startup_stage("game_setup")
         .add_startup_system_to_stage("game_setup", game_setup.system())
@@ -255,6 +299,9 @@ fn main() {
         .add_system(size_scaling.system())
         .add_system(food_spawner.system())
         .add_system(snek_timer.system())
+        .add_system(snek_eating.system())
+        .add_system(snek_growth.system())
+        .add_event::<GrowthEvent>()
         .add_plugins(DefaultPlugins)
         .run();
 }
